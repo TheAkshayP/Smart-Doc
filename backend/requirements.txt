@@ -1,0 +1,25 @@
+fastapi
+uvicorn
+python-multipart
+python-dotenv
+pydantic
+
+# Google Gemini
+google-generativeai
+
+# Fully compatible LangChain stack
+langchain
+langchain-core
+langchain-community
+
+# Embedding model
+sentence-transformers
+
+# Vector store (ChromaDB)
+chromadb==0.5.3
+
+# File handling
+PyPDF2
+pandas
+numpy
+tiktoken
