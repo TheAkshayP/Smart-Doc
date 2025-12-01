@@ -4,10 +4,9 @@ import google.generativeai as genai
 
 load_dotenv()
 
-
-# -----------------------------------------------
-# Load Gemini LLM (Clean + Correct)
-# -----------------------------------------------
+# ===========================================================
+# 🔹 LOAD GEMINI LLM
+# ===========================================================
 def load_llm_pipeline():
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
@@ -28,9 +27,9 @@ def load_llm_pipeline():
         raise e
 
 
-# -----------------------------------------------
-# Extract text safely from Gemini response
-# -----------------------------------------------
+# ===========================================================
+# 🔹 SAFE EXTRACT TEXT FROM GEMINI RESPONSE
+# ===========================================================
 def _extract_text_from_genai_response(resp):
     try:
         if hasattr(resp, "text"):
@@ -41,11 +40,13 @@ def _extract_text_from_genai_response(resp):
             if hasattr(c, "content"):
                 parts = c.content
                 texts = []
+
                 for item in parts:
                     if isinstance(item, dict) and "text" in item:
                         texts.append(item["text"])
                     elif isinstance(item, str):
                         texts.append(item)
+
                 return "".join(texts)
     except:
         pass
@@ -53,9 +54,56 @@ def _extract_text_from_genai_response(resp):
     return str(resp)
 
 
-# -----------------------------------------------
-# RAG Answering (simple & clean)
-# -----------------------------------------------
+# ===========================================================
+# 🔹 COMPUTE CONFIDENCE SCORE (Simple but Effective)
+# ===========================================================
+def compute_confidence(docs):
+    if not docs:
+        return 0.0
+    scores = []
+    for d in docs:
+        s = d.metadata.get("score", 0.5)
+        if isinstance(s, (int, float)):
+            scores.append(s)
+    if not scores:
+        return 0.5
+    return round(sum(scores) / len(scores), 2)
+
+
+# ===========================================================
+# 🔹 FORMAT FINAL ANSWER BEAUTIFULLY
+# ===========================================================
+def format_answer(answer, sources, confidence, summary):
+    formatted = f"""
+📘 **SmartDoc Answer**
+
+{answer}
+
+---
+
+📚 **Sources Used:**
+"""
+    if sources:
+        for i, src in enumerate(sources, 1):
+            page = src.metadata.get("page", "Unknown")
+            formatted += f"- Source {i}: Page {page}\n"
+    else:
+        formatted += "- No sources found\n"
+
+    formatted += f"""
+🔎 **Confidence:** {confidence}
+
+✨ **TL;DR Summary:**  
+{summary}
+
+🧠 _SmartDoc RAG Engine — Powered by Gemini & BGE-Large_
+"""
+    return formatted.strip()
+
+
+# ===========================================================
+# 🔹 MAIN RAG PIPELINE
+# ===========================================================
 def answer_question(question: str, vectordb, llm, k=4):
     if vectordb is None:
         return "❌ No document found. Upload a document first."
@@ -64,18 +112,36 @@ def answer_question(question: str, vectordb, llm, k=4):
         return "❌ LLM not initialized."
 
     try:
-        # Retrieve context from ChromaDB
+        # ---------------------------------------------
+        # 1) Retrieve relevant chunks
+        # ---------------------------------------------
         retriever = vectordb.as_retriever(search_kwargs={"k": k})
         docs = retriever.get_relevant_documents(question)
 
-        context = "\n\n".join(d.page_content for d in docs) if docs else ""
+        if not docs:
+            return "I don't know"
+
+        context = "\n\n".join(d.page_content for d in docs)
+        confidence = compute_confidence(docs)
+
+        # ---------------------------------------------
+        # 2) Build improved prompt
+        # ---------------------------------------------
+        FORMAT_INSTRUCTIONS = """
+Format the answer using:
+- Bullet points
+- Headings
+- Short sentences
+- **Bold text** for key ideas
+- Clean markdown
+"""
 
         prompt = f"""
-You are SmartDoc, a document analysis expert.
+You are SmartDoc, a strict RAG-based assistant.
 Answer ONLY using the context below.
+If the answer is NOT in the context, reply: I don't know.
 
-If the answer is NOT found in the context,
-reply exactly: I don't know
+{FORMAT_INSTRUCTIONS}
 
 --------------------------------
 📄 CONTEXT:
@@ -87,11 +153,25 @@ reply exactly: I don't know
 💡 ANSWER:
 """
 
-        print("🔎 Sending prompt to Gemini (generate_content)...")
+        # ---------------------------------------------
+        # 3) Generate answer
+        # ---------------------------------------------
+        print("🔎 Sending prompt to Gemini...")
         response = llm.generate_content(prompt)
+        answer = _extract_text_from_genai_response(response).strip()
 
-        answer = _extract_text_from_genai_response(response)
-        return answer.strip()
+        # ---------------------------------------------
+        # 4) TL;DR Summary
+        # ---------------------------------------------
+        summary_resp = llm.generate_content(
+            f"Summarize this in one short sentence:\n{answer}"
+        )
+        summary = _extract_text_from_genai_response(summary_resp).strip()
+
+        # ---------------------------------------------
+        # 5) Build formatted answer
+        # ---------------------------------------------
+        return format_answer(answer, docs, confidence, summary)
 
     except Exception as e:
         return f"❌ RAG Pipeline Error → {e}"

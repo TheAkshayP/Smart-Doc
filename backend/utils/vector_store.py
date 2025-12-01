@@ -13,16 +13,24 @@ load_dotenv()
 
 
 # ============================================================
-# 🔹 LOAD EMBEDDING MODEL
+# 🔹 LOAD EMBEDDING MODEL  (UPDATED FOR BGE-LARGE)
 # ============================================================
 def get_embedding_model():
-    model_name = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+    """
+    Loads the embedding model defined in .env.
+    Defaults to BGE-Large if nothing is set.
+    """
+    model_name = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
     print(f"🔧 Loading Embedding Model: {model_name}")
-    return SentenceTransformerEmbeddings(model_name=model_name)
+
+    return SentenceTransformerEmbeddings(
+        model_name=model_name,
+        encode_kwargs={"normalize_embeddings": True}  # Required for BGE!
+    )
 
 
 # ============================================================
-# 🔹 CHUNKING
+# 🔹 CHUNKING (NO CHANGE)
 # ============================================================
 def split_into_chunks(full_text: str, chunk_size: int = 500, overlap: int = 100):
     splitter = RecursiveCharacterTextSplitter(
@@ -40,17 +48,15 @@ def split_into_chunks(full_text: str, chunk_size: int = 500, overlap: int = 100)
 
 
 # ============================================================
-# 🔹 SAFE CLOSE OF CHROMA (PHASE 1)
+# 🔹 SAFE CLOSE OF CHROMA
 # ============================================================
 def safe_close_vectordb(vectordb):
-    """Try gentle release of Chroma + DuckDB locks."""
     if vectordb is None:
         return
 
     print("🔒 [SAFE CLOSE] Closing Chroma DB...")
 
     try:
-        # Drop internal references
         if hasattr(vectordb, "_client"):
             try:
                 vectordb._client._persist_client = False
@@ -64,7 +70,6 @@ def safe_close_vectordb(vectordb):
     except Exception as e:
         print(f"⚠️ [SAFE CLOSE] Failed closing internals: {e}")
 
-    # Drop Python object reference
     try:
         del vectordb
     except:
@@ -72,20 +77,13 @@ def safe_close_vectordb(vectordb):
 
     gc.collect()
     time.sleep(0.4)
-
     print("🔓 [SAFE CLOSE] Released.")
 
 
 # ============================================================
-# 🔹 AGGRESSIVE DIRECTORY REMOVAL (PHASE 2)
+# 🔹 AGGRESSIVE DIRECTORY REMOVAL
 # ============================================================
 def force_remove_dir(path: str, retries=6):
-    """
-    Aggressive removal:
-    - remove readonly flags
-    - delete files individually
-    - exponential backoff
-    """
     if not os.path.exists(path):
         return True
 
@@ -96,7 +94,7 @@ def force_remove_dir(path: str, retries=6):
         except Exception as e:
             print(f"❌ Delete failed (attempt {attempt}/{retries}): {e}")
 
-            # remove file attributes + manually delete files
+            # Remove file attributes + retry delete
             for root, dirs, files in os.walk(path, topdown=False):
                 for name in files:
                     fpath = os.path.join(root, name)
@@ -114,10 +112,8 @@ def force_remove_dir(path: str, retries=6):
                         pass
 
             gc.collect()
-            sleep_time = 0.2 * attempt
-            time.sleep(sleep_time)
+            time.sleep(0.2 * attempt)
 
-    # final desperate attempt
     try:
         shutil.rmtree(path)
         return True
@@ -127,26 +123,20 @@ def force_remove_dir(path: str, retries=6):
 
 
 # ============================================================
-# 🔹 HYBRID CLOSE: SAFE → AGGRESSIVE
+# 🔹 HYBRID CLOSE → SAFE THEN FORCE REMOVE DIRECTORY
 # ============================================================
 def close_vectordb(vectordb, persist_dir=None):
-    """
-    Hybrid approach:
-    1) Safe close (release references + GC)
-    2) If still locked → force delete directory
-    """
     safe_close_vectordb(vectordb)
 
     if persist_dir and os.path.exists(persist_dir):
-        success = force_remove_dir(persist_dir)
-        if success:
+        if force_remove_dir(persist_dir):
             print("🗑 Chroma directory removed successfully.")
         else:
             print("❌ Could not delete Chroma directory even after aggressive removal.")
 
 
 # ============================================================
-# 🔹 LOAD EXISTING VECTORSTORE
+# 🔹 LOAD EXISTING CHROMA DB
 # ============================================================
 def load_existing_embeddings(persist_dir: str):
     if not os.path.exists(persist_dir) or not os.listdir(persist_dir):
@@ -155,8 +145,8 @@ def load_existing_embeddings(persist_dir: str):
 
     try:
         print(f"📂 Loading vector DB → {persist_dir}")
-        embedding_model = get_embedding_model()
 
+        embedding_model = get_embedding_model()
         vectordb = Chroma(
             persist_directory=persist_dir,
             embedding_function=embedding_model
@@ -171,7 +161,7 @@ def load_existing_embeddings(persist_dir: str):
 
 
 # ============================================================
-# 🔹 CREATE / UPDATE VECTORSTORE
+# 🔹 CREATE / UPDATE CHROMA VECTORSTORE (UPDATED FOR BGE)
 # ============================================================
 def store_embeddings(chunks, persist_dir: str):
     if not chunks:
@@ -180,7 +170,7 @@ def store_embeddings(chunks, persist_dir: str):
     os.makedirs(persist_dir, exist_ok=True)
     embedding_model = get_embedding_model()
 
-    # If DB exists → update
+    # UPDATE EXISTING DB
     if os.path.exists(persist_dir) and os.listdir(persist_dir):
         print("🔍 Existing DB found → updating...")
 
@@ -204,16 +194,15 @@ def store_embeddings(chunks, persist_dir: str):
         except Exception as e:
             print(f"⚠️ Error updating DB: {e}")
 
-            # If dimension mismatch → reset DB
+            # RESET DB ON DIMENSION MISMATCH
             if "dimension" in str(e).lower():
                 print("⚠️ Dimension mismatch → resetting DB...")
-
                 close_vectordb(vectordb, persist_dir)
 
             else:
                 raise
 
-    # Create new DB
+    # CREATE NEW DB
     print("📁 Creating NEW vector DB...")
 
     vectordb = Chroma.from_texts(
