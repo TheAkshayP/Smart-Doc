@@ -40,13 +40,11 @@ def _extract_text_from_genai_response(resp):
             if hasattr(c, "content"):
                 parts = c.content
                 texts = []
-
                 for item in parts:
                     if isinstance(item, dict) and "text" in item:
                         texts.append(item["text"])
                     elif isinstance(item, str):
                         texts.append(item)
-
                 return "".join(texts)
     except:
         pass
@@ -55,48 +53,46 @@ def _extract_text_from_genai_response(resp):
 
 
 # ===========================================================
-# 🔹 COMPUTE CONFIDENCE SCORE (Simple but Effective)
+# 🔹 FORMAT ANSWER (Handles both known + unknown questions)
 # ===========================================================
-def compute_confidence(docs):
-    if not docs:
-        return 0.0
-    scores = []
-    for d in docs:
-        s = d.metadata.get("score", 0.5)
-        if isinstance(s, (int, float)):
-            scores.append(s)
-    if not scores:
-        return 0.5
-    return round(sum(scores) / len(scores), 2)
+def format_answer(answer, sources):
 
+    # Normalize lowercase for detection
+    ans_low = answer.lower().strip()
 
-# ===========================================================
-# 🔹 FORMAT FINAL ANSWER BEAUTIFULLY
-# ===========================================================
-def format_answer(answer, sources, confidence, summary):
+    # ---------------------------------------------
+    # CASE 1: If the answer is "I don't know" (any variation)
+    # ---------------------------------------------
+    if ("i don't know" in ans_low) or ("i dont know" in ans_low) or ("i do not know" in ans_low):
+        formatted = f"""
+I don't know.
+
+This question does not seem to be related to the content of the uploaded PDF.
+
+🧠 SmartDoc RAG Engine — Made by Akshay
+"""
+        return formatted.strip()
+
+    # ---------------------------------------------
+    # CASE 2: Normal PDF-related answer
+    # ---------------------------------------------
+    if sources:
+        pages = []
+        for src in sources:
+            page = src.metadata.get("page", "Unknown")
+            pages.append(f"- Page {page}")
+        source_text = "\n".join(pages)
+    else:
+        source_text = "- No sources found"
+
     formatted = f"""
-📘 **SmartDoc Answer**
 
 {answer}
 
----
+📚 **Sources Used:**  
+{source_text}
 
-📚 **Sources Used:**
-"""
-    if sources:
-        for i, src in enumerate(sources, 1):
-            page = src.metadata.get("page", "Unknown")
-            formatted += f"- Source {i}: Page {page}\n"
-    else:
-        formatted += "- No sources found\n"
-
-    formatted += f"""
-🔎 **Confidence:** {confidence}
-
-✨ **TL;DR Summary:**  
-{summary}
-
-🧠 _SmartDoc RAG Engine — Powered by Gemini & BGE-Large_
+🧠 SmartDoc RAG Engine — Made by Akshay
 """
     return formatted.strip()
 
@@ -105,73 +101,63 @@ def format_answer(answer, sources, confidence, summary):
 # 🔹 MAIN RAG PIPELINE
 # ===========================================================
 def answer_question(question: str, vectordb, llm, k=4):
-    if vectordb is None:
-        return "❌ No document found. Upload a document first."
 
+    # ----------------------------
+    # Handle missing vector DB
+    # ----------------------------
+    if vectordb is None:
+        return format_answer("I don't know", [])
+
+    # ----------------------------
+    # Handle missing LLM
+    # ----------------------------
     if llm is None:
-        return "❌ LLM not initialized."
+        return format_answer("I don't know", [])
 
     try:
         # ---------------------------------------------
-        # 1) Retrieve relevant chunks
+        # 1. Retrieve relevant chunks
         # ---------------------------------------------
         retriever = vectordb.as_retriever(search_kwargs={"k": k})
         docs = retriever.get_relevant_documents(question)
 
+        # If RAG finds nothing → unrelated question
         if not docs:
-            return "I don't know"
+            return format_answer("I don't know", [])
 
+        # ---------------------------------------------
+        # 2. Build context
+        # ---------------------------------------------
         context = "\n\n".join(d.page_content for d in docs)
-        confidence = compute_confidence(docs)
 
         # ---------------------------------------------
-        # 2) Build improved prompt
+        # 3. Build prompt
         # ---------------------------------------------
-        FORMAT_INSTRUCTIONS = """
-Format the answer using:
-- Bullet points
-- Headings
-- Short sentences
-- **Bold text** for key ideas
-- Clean markdown
-"""
-
         prompt = f"""
-You are SmartDoc, a strict RAG-based assistant.
+You are SmartDoc, a RAG-based assistant.
 Answer ONLY using the context below.
-If the answer is NOT in the context, reply: I don't know.
+If the answer is NOT in the context, reply exactly: I don't know.
 
-{FORMAT_INSTRUCTIONS}
-
---------------------------------
-📄 CONTEXT:
+Context:
 {context}
 
-❓ QUESTION:
+Question:
 {question}
 
-💡 ANSWER:
+Answer:
 """
 
         # ---------------------------------------------
-        # 3) Generate answer
+        # 4. Generate Answer
         # ---------------------------------------------
         print("🔎 Sending prompt to Gemini...")
         response = llm.generate_content(prompt)
         answer = _extract_text_from_genai_response(response).strip()
 
         # ---------------------------------------------
-        # 4) TL;DR Summary
+        # 5. Format final answer (normal or unknown)
         # ---------------------------------------------
-        summary_resp = llm.generate_content(
-            f"Summarize this in one short sentence:\n{answer}"
-        )
-        summary = _extract_text_from_genai_response(summary_resp).strip()
-
-        # ---------------------------------------------
-        # 5) Build formatted answer
-        # ---------------------------------------------
-        return format_answer(answer, docs, confidence, summary)
+        return format_answer(answer, docs)
 
     except Exception as e:
         return f"❌ RAG Pipeline Error → {e}"

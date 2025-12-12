@@ -1,0 +1,10 @@
+[
+  {
+    "question": "What document is this?",
+    "ground_truth": "Test Document for SmartDoc"
+  },
+  {
+    "question": "What is the main topic mentioned in the introduction?",
+    "ground_truth": "document analysis"
+  }
+]
